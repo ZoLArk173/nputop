@@ -14,6 +14,33 @@ use ratatui::{
 use std::fs;
 use std::io::{stdout, Result};
 use std::time::{Duration, SystemTime};
+use devices::{Devices, DevicePath};
+use std::process;
+
+fn pci_to_sysfs_path(bus: u8, slot: u8, function: u8) -> String {
+    // Convert bus, slot, and function to the corresponding sysfs path format
+    format!("/sys/devices/pci0000:00/0000:{:02x}:{:02x}.{}", bus, slot, function)
+}
+
+fn get_npu_device() -> Option<String> {
+    match Devices::pci() {
+        Ok(devices) => {
+            for device in devices {
+                if device.vendor() == "Intel Corporation" && device.product().contains("NPU"){
+                    let pci_path = device.path();
+                    if let DevicePath::PCI { bus, slot, function } = pci_path {
+                        return Some(pci_to_sysfs_path(*bus, *slot, *function));
+                    }
+                }
+            }
+            return None;
+        }
+        Err(err) => {
+            println!("Cannot list all device: {}", err);
+            None
+        }
+    }
+}
 
 fn main() -> Result<()> {
     enable_raw_mode()?;
@@ -27,10 +54,18 @@ fn main() -> Result<()> {
     let mut usage_history: Vec<(f64, f64)> = Vec::new();
     let mut elapsed_time: f64 = 0.0;
 
+    let npu_device =  if let Some(path) = get_npu_device() {
+        format!("{}/power/runtime_activate_time", path)
+    } else {
+        println!("Cannot get NPU device.");
+        process::exit(1);
+    };
+
+
     loop {
         // Read NPU runtime from the specified file
         let npu_runtime =
-            fs::read_to_string("/sys/devices/pci0000:00/0000:00:0b.0/power/runtime_active_time")
+            fs::read_to_string(npu_device.as_str())
                 .unwrap_or_else(|_| String::from("0"));
         let npu_runtime: f64 = npu_runtime.trim().parse().unwrap_or(0.0);
 
