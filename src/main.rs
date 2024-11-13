@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     let mut elapsed_time: f64 = 0.0;
 
     let npu_device =  if let Some(path) = get_npu_device() {
-        format!("{}/power/runtime_activate_time", path)
+        format!("{}/power/runtime_active_time", path)
     } else {
         println!("Cannot get NPU device.");
         process::exit(1);
