@@ -14,26 +14,22 @@ use ratatui::{
 use std::fs;
 use std::io::{stdout, Result};
 use std::time::{Duration, SystemTime};
-use devices::{Devices, DevicePath};
-use std::process;
+use devices::{DeviceInfo, DevicePath, Devices};
 
 fn pci_to_sysfs_path(bus: u8, slot: u8, function: u8) -> String {
     // Convert bus, slot, and function to the corresponding sysfs path format
     format!("/sys/devices/pci0000:00/0000:{:02x}:{:02x}.{}", bus, slot, function)
 }
 
-fn get_npu_device() -> Option<String> {
+fn get_npu_device() -> Option<DeviceInfo> {
     match Devices::pci() {
         Ok(devices) => {
             for device in devices {
-                if device.vendor() == "Intel Corporation" && device.product().contains("NPU"){
-                    let pci_path = device.path();
-                    if let DevicePath::PCI { bus, slot, function } = pci_path {
-                        return Some(pci_to_sysfs_path(*bus, *slot, *function));
-                    }
+                if device.vendor() == "Intel Corporation" && device.product().contains("NPU") {
+                    return Some(device);
                 }
             }
-            return None;
+            None
         }
         Err(err) => {
             println!("Cannot list all device: {}", err);
@@ -54,19 +50,28 @@ fn main() -> Result<()> {
     let mut usage_history: Vec<(f64, f64)> = Vec::new();
     let mut elapsed_time: f64 = 0.0;
 
-    let npu_device =  if let Some(path) = get_npu_device() {
-        format!("{}/power/runtime_active_time", path)
+    let npu_device_name;
+    let npu_device_path;
+    
+    if let Some(device) = get_npu_device() {
+        npu_device_name = device.product().to_string();
+        
+        let pci_path = device.path();
+        npu_device_path = if let DevicePath::PCI {bus, slot, function} = pci_path {
+            format!("{}/power/runtime_active_time", pci_to_sysfs_path(*bus, *slot, *function))
+        } else {
+            String::new()
+        };
     } else {
-        println!("Cannot get NPU device.");
-        process::exit(1);
+        panic!("Cannot get any NPU device.");
     };
 
 
     loop {
         // Read NPU runtime from the specified file
-        let npu_runtime =
-            fs::read_to_string(npu_device.as_str())
-                .unwrap_or_else(|_| String::from("0"));
+        let npu_runtime = fs::read_to_string(npu_device_path.as_str()).unwrap_or_else(
+            |err| panic!("Cannot read device path {}: {}", npu_device_path, err)
+        );
         let npu_runtime: f64 = npu_runtime.trim().parse().unwrap_or(0.0);
 
         // Get the difference between the current runtime and the previous runtime
@@ -110,7 +115,7 @@ fn main() -> Result<()> {
             let chart = Chart::new(datasets)
                 .block(
                     Block::default()
-                        .title("NPU Usage History")
+                        .title(format!("NPU ({}) Usage History", &npu_device_name))
                         .borders(Borders::ALL),
                 )
                 .x_axis(
