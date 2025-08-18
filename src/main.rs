@@ -1,5 +1,5 @@
 use crossterm::{
-    event::{poll, read, Event, KeyCode},
+    event::{poll, read, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
 };
@@ -140,10 +140,10 @@ fn main() -> Result<()> {
             f.render_widget(chart, chunks[0]);
         })?;
 
-        // Handle input here (e.g., break loop on 'q' key press)
+        // Handle input here (e.g., break loop on 'q' key press as well as CTRL+C)
         if poll(Duration::from_secs(1))? {
             if let Event::Key(key) = read()? {
-                if key.code == KeyCode::Char('q') {
+                if key.code == KeyCode::Char('q') || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)) {
                     break;
                 }
             }
