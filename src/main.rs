@@ -8,25 +8,51 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Color,
     symbols,
-    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, LegendPosition},
+    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType},
     Terminal,
 };
 use std::fs;
 use std::io::{stdout, Result};
 use std::time::{Duration, SystemTime};
-use devices::{DeviceInfo, DevicePath, Devices};
+use devices::{DevicePath, Devices};
 
-fn pci_to_sysfs_path(bus: u8, slot: u8, function: u8) -> String {
-    // Convert bus, slot, and function to the corresponding sysfs path format
-    format!("/sys/devices/pci0000:00/0000:{:02x}:{:02x}.{}", bus, slot, function)
-}
+const ACCEL_SYSFS: &str = "/sys/class/accel/accel0/device";
 
-fn get_npu_device() -> Option<DeviceInfo> {
+fn get_npu_device() -> Option<(String, String)> {
+    // Direct sysfs detection for Intel VPU driver (Meteor Lake / Lunar Lake)
+    let uevent_path = format!("{}/uevent", ACCEL_SYSFS);
+    if let Ok(uevent) = fs::read_to_string(&uevent_path) {
+        if uevent.contains("intel_vpu") {
+            // Read PCI_ID to get the name
+            let pci_id = uevent.lines()
+                .find(|l| l.starts_with("PCI_ID="))
+                .map(|l| l.trim_start_matches("PCI_ID=").to_string())
+                .unwrap_or_else(|| "Intel NPU".to_string());
+            
+            let name = match pci_id.as_str() {
+                "8086:7D1D" => "Intel NPU (Meteor Lake)".to_string(),
+                "8086:643E" => "Intel NPU (Lunar Lake)".to_string(),
+                _ => format!("Intel NPU ({})", pci_id),
+            };
+
+            let busy_time_path = format!("{}/npu_busy_time_us", ACCEL_SYSFS);
+            return Some((name, busy_time_path));
+        }
+    }
+
+    // Fallback: classic PCI detection (original behavior)
     match Devices::pci() {
         Ok(devices) => {
             for device in devices {
                 if device.vendor() == "Intel Corporation" && device.product().contains("NPU") {
-                    return Some(device);
+                    let pci_path = device.path();
+                    if let DevicePath::PCI {bus, slot, function} = pci_path {
+                        let path = format!(
+                            "/sys/devices/pci0000:00/0000:{:02x}:{:02x}.{}/power/runtime_active_time",
+                            bus, slot, function
+                        );
+                        return Some((device.product().to_string(), path));
+                    }
                 }
             }
             None
@@ -50,20 +76,9 @@ fn main() -> Result<()> {
     let mut usage_history: Vec<(f64, f64)> = Vec::new();
     let mut elapsed_time: f64 = 0.0;
 
-    let npu_device_name;
-    let npu_device_path;
-    
-    if let Some(device) = get_npu_device() {
-        npu_device_name = device.product().to_string();
-        
-        let pci_path = device.path();
-        npu_device_path = if let DevicePath::PCI {bus, slot, function} = pci_path {
-            format!("{}/power/runtime_active_time", pci_to_sysfs_path(*bus, *slot, *function))
-        } else {
-            String::new()
-        };
-    } else {
-        panic!("Cannot get any NPU device.");
+    let (npu_device_name, npu_device_path) = match get_npu_device() {
+        Some(d) => d,
+        None => panic!("Cannot get any NPU device."),
     };
 
 
