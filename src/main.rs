@@ -23,23 +23,33 @@ fn get_npu_device() -> Option<(String, String)> {
     let uevent_path = format!("{}/uevent", ACCEL_SYSFS);
     if let Ok(uevent) = fs::read_to_string(&uevent_path) {
         if uevent.contains("intel_vpu") {
-            // Read PCI_ID to get the name
             let pci_id = uevent.lines()
                 .find(|l| l.starts_with("PCI_ID="))
                 .map(|l| l.trim_start_matches("PCI_ID=").to_string())
                 .unwrap_or_else(|| "Intel NPU".to_string());
-            
+
             let name = match pci_id.as_str() {
                 "8086:7D1D" => "Intel NPU (Meteor Lake)".to_string(),
                 "8086:643E" => "Intel NPU (Lunar Lake)".to_string(),
                 _ => format!("Intel NPU ({})", pci_id),
             };
 
+            // Use npu_busy_time_us if available (Linux >= 6.11)
+            // otherwise fall back to power/runtime_active_time via PCI slot
             let busy_time_path = format!("{}/npu_busy_time_us", ACCEL_SYSFS);
-            return Some((name, busy_time_path));
+            let device_path = if std::path::Path::new(&busy_time_path).exists() {
+                busy_time_path
+            } else {
+                let pci_slot = uevent.lines()
+                    .find(|l| l.starts_with("PCI_SLOT_NAME="))
+                    .map(|l| l.trim_start_matches("PCI_SLOT_NAME=").trim().to_string())
+                    .unwrap_or_default();
+                format!("/sys/devices/pci0000:00/{}/power/runtime_active_time", pci_slot)
+            };
+
+            return Some((name, device_path));
         }
     }
-
     // Fallback: classic PCI detection (original behavior)
     match Devices::pci() {
         Ok(devices) => {
