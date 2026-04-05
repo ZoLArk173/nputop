@@ -18,7 +18,7 @@ use devices::{DevicePath, Devices};
 
 const ACCEL_SYSFS: &str = "/sys/class/accel/accel0/device";
 
-fn get_npu_device() -> Option<(String, String)> {
+fn get_npu_device() -> Option<(String, String, bool)> {
     // Direct sysfs detection for Intel VPU driver (Meteor Lake / Lunar Lake)
     let uevent_path = format!("{}/uevent", ACCEL_SYSFS);
     if let Ok(uevent) = fs::read_to_string(&uevent_path) {
@@ -31,23 +31,24 @@ fn get_npu_device() -> Option<(String, String)> {
             let name = match pci_id.as_str() {
                 "8086:7D1D" => "Intel NPU (Meteor Lake)".to_string(),
                 "8086:643E" => "Intel NPU (Lunar Lake)".to_string(),
+                "8086:B03E" => "Intel NPU (Panther Lake)".to_string(),
                 _ => format!("Intel NPU ({})", pci_id),
             };
 
             // Use npu_busy_time_us if available (Linux >= 6.11)
             // otherwise fall back to power/runtime_active_time via PCI slot
             let busy_time_path = format!("{}/npu_busy_time_us", ACCEL_SYSFS);
-            let device_path = if std::path::Path::new(&busy_time_path).exists() {
-                busy_time_path
+            let (device_path, is_microseconds) = if std::path::Path::new(&busy_time_path).exists() {
+                (busy_time_path, true)
             } else {
                 let pci_slot = uevent.lines()
                     .find(|l| l.starts_with("PCI_SLOT_NAME="))
                     .map(|l| l.trim_start_matches("PCI_SLOT_NAME=").trim().to_string())
                     .unwrap_or_default();
-                format!("/sys/devices/pci0000:00/{}/power/runtime_active_time", pci_slot)
+                (format!("/sys/devices/pci0000:00/{}/power/runtime_active_time", pci_slot), false)
             };
 
-            return Some((name, device_path));
+            return Some((name, device_path, is_microseconds));
         }
     }
     // Fallback: classic PCI detection (original behavior)
@@ -61,7 +62,7 @@ fn get_npu_device() -> Option<(String, String)> {
                             "/sys/devices/pci0000:00/0000:{:02x}:{:02x}.{}/power/runtime_active_time",
                             bus, slot, function
                         );
-                        return Some((device.product().to_string(), path));
+                        return Some((device.product().to_string(), path, false));
                     }
                 }
             }
@@ -86,7 +87,7 @@ fn main() -> Result<()> {
     let mut usage_history: Vec<(f64, f64)> = Vec::new();
     let mut elapsed_time: f64 = 0.0;
 
-    let (npu_device_name, npu_device_path) = match get_npu_device() {
+    let (npu_device_name, npu_device_path, is_microseconds) = match get_npu_device() {
         Some(d) => d,
         None => panic!("Cannot get any NPU device."),
     };
@@ -100,7 +101,12 @@ fn main() -> Result<()> {
         let npu_runtime: f64 = npu_runtime.trim().parse().unwrap_or(0.0);
 
         // Get the difference between the current runtime and the previous runtime
-        let npu_runtime_diff = npu_runtime - previous_npu_runtime;
+        // npu_busy_time_us is in microseconds; convert to milliseconds to match real_time_diff
+        let npu_runtime_diff = if is_microseconds {
+            (npu_runtime - previous_npu_runtime) / 1000.0
+        } else {
+            npu_runtime - previous_npu_runtime
+        };
         previous_npu_runtime = npu_runtime;
 
         // Get the elapsed real time since the last update (in milliseconds)
